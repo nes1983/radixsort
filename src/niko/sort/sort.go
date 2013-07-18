@@ -1,5 +1,7 @@
 package sort
 
+import "fmt"
+
 type Interface interface {
 	Len() int
 	Swap(i, j int)
@@ -25,20 +27,21 @@ func insertionSortInPos(data Interface, a, b int, bytePos uint) {
 	}
 }
 
-const (
-	lImprov = uint64(0xffffffffffffff00)
-	rImprov = uint64(0x00ffffffffffffff)
-)
-
 func Sort(data Interface) {
-	sortRange(data, 0, data.Len()-1, uint(0), uint(56))
+	sortRange(data, 0, data.Len()-1, uint(56), uint(0))
 }
 
-func sortRange(data Interface, a, b int, lShift, rShift uint) {
+func sortRange(data Interface, a, b int, boundaryL, boundaryR uint) {
 	if b <= a {
 		return
 	}
-	//	fmt.Println("entry", a, b, lShift, rShift)
+
+	fmt.Println("entry", a, b, boundaryL, boundaryR)
+	fmt.Println("\n")
+	for i := a; i <= b; i++ {
+		fmt.Print(data.Key(i), " ")
+	}
+	fmt.Println("\n")
 
 	// Steps:
 	//    Count inversions. If very many: reverse. Count again. If very few: Selection sort.
@@ -52,14 +55,17 @@ func sortRange(data Interface, a, b int, lShift, rShift uint) {
 		insertionSort(data, a, b)
 	}
 
-	var shiftDistance uint
-	high, lShift, rShift, inversions := countInversions(data, a, b, lShift, rShift)
-	//	fmt.Println("updated", inversions, high, lShift, rShift)
+	var inversions int
+	var shift uint
+	var high bool
+	high, boundaryL, boundaryR, inversions = countInversions(data, a, b, boundaryL, boundaryR)
+	high = true // XXX remove
+	fmt.Println("updated", inversions, high, boundaryL, boundaryR)
 
 	if high {
-		shiftDistance = lShift
+		shift = boundaryL
 	} else {
-		shiftDistance = rShift
+		shift = boundaryR
 	}
 
 	// TODO: Reverse carefully -- easy to break stability.
@@ -67,7 +73,7 @@ func sortRange(data Interface, a, b int, lShift, rShift uint) {
 	if inversions == 0 {
 		return
 	}
-	if false && inversions < 7 { // Use this once it works.
+	if false && inversions < 7 { // Use this as soon as it works.
 		insertionSort(data, a, b)
 		return
 	}
@@ -75,27 +81,33 @@ func sortRange(data Interface, a, b int, lShift, rShift uint) {
 	// TODO reverse or not. Then insertion sort or bucket sort.
 	// TODO: If count is small, selection sort into place.
 
-	perBucket := radixSortInByte(data, a, b, shiftDistance)
+	bucketEnds := radixSortInByte(data, a, b, shift)
 
-	if lShift == rShift {
+	fmt.Println("\n")
+	for i := a; i <= b; i++ {
+		fmt.Print(data.Key(i), " ")
+	}
+	fmt.Println("\n")
+
+	if boundaryL == boundaryR {
 		return
 	}
-	//	fmt.Println("old shifts: ", lShift, rShift, a, b)
+	fmt.Println("old shifts: ", boundaryL, boundaryR, a, b)
 	if !high {
-		sortRange(data, a, b, lShift, rShift+8)
+		sortRange(data, a, b, boundaryL, boundaryR+8)
 	} else {
 		last := 0
-		for _, v := range perBucket {
-			sortRange(data, last, v-1, lShift-8, rShift)
+		for _, v := range bucketEnds {
+			sortRange(data, last, v-1, boundaryL-8, boundaryR)
 			last = v
 		}
 	}
 }
 
 // Sets perBucket to the bucket sizes.
-func computeBucketSizes(data Interface, a, b int, bytePos uint, perBucket *[256]int) {
+func computeBucketSizes(data Interface, a, b int, bytePos uint, capacity *[256]int) {
 	for i := a; i <= b; i++ {
-		perBucket[read(data.Key(i), bytePos)]++
+		capacity[read(data.Key(i), bytePos)]++
 	}
 }
 
@@ -104,48 +116,46 @@ func read(from uint64, bytePos uint) byte {
 	return byte((from >> bytePos) & 0xff)
 }
 
-// Assumes that s.perBucket is ok, and then modifies it and sets s.WritePos
-// After this, bucket i starts at s.WritePos[i] and ends at s.PerBucket[i]-1
-func computeWritePos(max int, perBucket, writePos *[256]int, a int) {
-	for i := range writePos {
-		writePos[i] = a
-	} // Reset writePos
-
-	sum := perBucket[0] + a
-	perBucket[0] = sum
-	for i := 1; sum-a != max; i++ {
-		writePos[i] = sum
-		sum += perBucket[i]
-		perBucket[i] = sum
+// After this, bucket i starts at writePos[i] and ends at writePos[i] + capacity[i]-1
+func computeWritePos(max int, capacity, writePos *[256]int, a int) {
+	writePos[0] = a
+	for i := 1; true; i++ {
+		p := writePos[i-1] + capacity[i-1]
+		if p == max {
+			break
+		}
+		writePos[i] = p
 	}
 }
 
 // shiftDistance is in BITS
 func radixSortInByte(data Interface, a, b int, shiftDistance uint) *[256]int {
-	//	fmt.Println("radix", a, b, shiftDistance)
-	var perBucket [256]int
+	fmt.Println("radix", a, b, shiftDistance)
+	var capacity [256]int
 	var writePos [256]int
 
-	computeBucketSizes(data, a, b, shiftDistance, &perBucket)
-	computeWritePos(b-a+1, &perBucket, &writePos, a)
+	computeBucketSizes(data, a, b, shiftDistance, &capacity)
+	computeWritePos(b+1, &capacity, &writePos, a)
 
 	buck := byte(0)
-	for perBucket[buck] == a {
+	for capacity[buck] == 0 {
 		buck++
 	}
 
 	i := a
 	for {
 		targetBucket := read(data.Key(i), shiftDistance)
+		capacity[targetBucket]--
 		if targetBucket != buck {
-			target := writePos[targetBucket]
-			data.Swap(i, target)
+			fmt.Println("swap ", i, writePos[targetBucket], data.Key(i), data.Key(writePos[targetBucket]))
+			fmt.Println("masked: ", read(data.Key(i), shiftDistance))
+			data.Swap(i, writePos[targetBucket])
 		} else {
-			i++ // Could move over into next bucket.
-			for i == perBucket[buck] {
-				// Bucket exhausted
-				if i == b+1 {
-					return &perBucket
+			i++
+			for capacity[buck] == 0 { // Is this the end of the bucket?
+				if i == b+1 { // All set
+					writePos[targetBucket]++
+					return &writePos
 				}
 				buck++
 				i = writePos[buck]
@@ -155,62 +165,39 @@ func radixSortInByte(data Interface, a, b int, shiftDistance uint) *[256]int {
 	}
 }
 
+const (
+	L_IMPROV = uint64(0xffffffffffffff00)
+	R_IMPROV = uint64(0x00ffffffffffffff)
+)
+
 // Find the leftmost and rightmost byte with inversions, as well as their inversions.
-func countInversions(data Interface, a, b int, lShift, rShift uint) (
-	big bool, newLShift, newRShift uint, inversions int) {
+func countInversions(data Interface, a, b int, boundaryL, boundaryR uint) (
+	big bool, lShift, rShift uint, inversions int) {
 
-	lImprovement, rImprovement := lImprov<<lShift, rImprov>>(56-rShift)
+	lShift, rShift = boundaryR, boundaryL
 
-	mask := uint64(0xffffffffffffffff)
-	if lShift >= rShift {
-		mask = mask >> rShift << rShift << (56 - lShift) >> (56 - lShift)
-	}
-
-	last := data.Key(a) & mask
-	var cur uint64
-	i := a + 1
-	for ; i <= b; i++ {
-		cur = data.Key(i) & mask
-		if cur != last {
-			break
-		}
-		last = cur
-	}
-	if cur == last { // All the same
-		return true, 0, 0, 0
-	}
-
-	k := cur ^ last
-
-	// Duplicate
-	for ; lImprovement&k != 0; lImprovement = lImprov << lShift {
-		lShift += 8
-	}
-	for ; rImprovement&k != 0; rImprovement = rImprov >> (56 - rShift) {
-		rShift -= 8
-	}
-
-	lastL, lastR := byte((cur>>lShift)&0xff), byte((cur>>rShift)&0xff)
-
-	lInversions, rInversions := 0, 0 // One of these will be returned
-
-	for ; i <= b; i++ {
-		cur = data.Key(i) & mask
-		k = cur ^ last
-
-		// Attempt to shift
-		for ; lImprovement&k != 0; lImprovement = lImprov << lShift {
+	lImprovement, rImprovement := L_IMPROV<<lShift, R_IMPROV>>(56-rShift)
+	var lInversions, rInversions int // One of these will be returned
+	var lastL, lastR byte
+	var last uint64
+	for i := a; i <= b; i++ {
+		cur := data.Key(i)
+		fmt.Println("Improve ", last, cur, lImprovement&cur, lImprovement&last, lImprovement)
+		for lShift < boundaryL && lImprovement&cur < lImprovement&last {
 			lShift += 8
 			lInversions = 0
 			lastL = 0
+			lImprovement = L_IMPROV << lShift
 		}
-		for ; rImprovement&k != 0; rImprovement = rImprov >> (56 - rShift) {
+		for rShift > boundaryR && rImprovement&cur < rImprovement&last {
 			rShift -= 8
 			rInversions = 0
 			lastR = 0
+			rImprovement = R_IMPROV >> (56 - rShift)
 		}
 
 		curL, curR := byte((cur>>lShift)&0xff), byte((cur>>rShift)&0xff)
+
 		if curL < lastL {
 			lInversions++
 		}
@@ -227,3 +214,5 @@ func countInversions(data Interface, a, b int, lShift, rShift uint) (
 		return false, lShift, rShift, rInversions
 	}
 }
+
+
